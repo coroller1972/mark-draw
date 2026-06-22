@@ -1,4 +1,4 @@
-import type { DiagramElement, DocumentState, Point } from './model'
+import type { DiagramElement, DocumentState, Point, RouteAxis } from './model'
 
 const N = 1
 const E = 2
@@ -21,6 +21,24 @@ const GLYPHS: Record<number, string> = {
   [E]: '─',
   [S]: '│',
   [W]: '─',
+}
+
+const ASCII_GLYPHS: Record<number, string> = {
+  [N | S]: '|',
+  [E | W]: '-',
+  [N]: '|',
+  [S]: '|',
+  [E]: '-',
+  [W]: '-',
+  [E | S]: '+',
+  [S | W]: '+',
+  [N | E]: '+',
+  [N | W]: '+',
+  [N | E | S]: '+',
+  [N | S | W]: '+',
+  [E | S | W]: '+',
+  [N | E | W]: '+',
+  [N | E | S | W]: '+',
 }
 
 const key = (point: Point) => `${point.x},${point.y}`
@@ -49,20 +67,22 @@ function segmentPoints(from: Point, to: Point) {
   return points
 }
 
-export function orthogonalPath(start: Point, end: Point) {
+export function orthogonalPath(start: Point, end: Point, preferredAxis?: RouteAxis) {
   if (start.x === end.x || start.y === end.y) return segmentPoints(start, end)
-  const horizontalFirst = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y)
+  const horizontalFirst = preferredAxis
+    ? preferredAxis === 'horizontal'
+    : Math.abs(end.x - start.x) >= Math.abs(end.y - start.y)
   const corner = horizontalFirst
     ? { x: end.x, y: start.y }
     : { x: start.x, y: end.y }
   return [...segmentPoints(start, corner), ...segmentPoints(corner, end).slice(1)]
 }
 
-export function connectorPath(start: Point, anchors: Point[], end: Point) {
+export function connectorPath(start: Point, anchors: Point[], end: Point, routeAxes: RouteAxis[] = []) {
   const waypoints = [start, ...anchors, end]
   const path: Point[] = []
   for (let index = 0; index < waypoints.length - 1; index += 1) {
-    const segment = orthogonalPath(waypoints[index], waypoints[index + 1])
+    const segment = orthogonalPath(waypoints[index], waypoints[index + 1], routeAxes[index])
     path.push(...(index === 0 ? segment : segment.slice(1)))
   }
   return path
@@ -82,14 +102,14 @@ function addPath(masks: Map<string, number>, points: Point[], dashedCells?: Set<
   }
 }
 
-function arrowFor(from: Point, to: Point) {
-  if (to.x > from.x) return '►'
-  if (to.x < from.x) return '◄'
-  if (to.y > from.y) return '▼'
-  return '▲'
+function arrowFor(from: Point, to: Point, compatibilityMode = false) {
+  if (to.x > from.x) return compatibilityMode ? '>' : '►'
+  if (to.x < from.x) return compatibilityMode ? '<' : '◄'
+  if (to.y > from.y) return compatibilityMode ? 'v' : '▼'
+  return compatibilityMode ? '^' : '▲'
 }
 
-function drawElement(element: DiagramElement, masks: Map<string, number>, chars: Raster, dashedCells: Set<string>) {
+function drawElement(element: DiagramElement, masks: Map<string, number>, chars: Raster, dashedCells: Set<string>, compatibilityMode: boolean) {
   if (element.type === 'box') {
     const left = element.x
     const right = element.x + Math.max(2, element.width) - 1
@@ -117,21 +137,21 @@ function drawElement(element: DiagramElement, masks: Map<string, number>, chars:
     element.points.forEach((point) => chars.set(key(point), character))
     return
   }
-  const points = connectorPath(element.start, element.anchors, element.end)
+  const points = connectorPath(element.start, element.anchors, element.end, element.routeAxes)
   addPath(masks, points, element.lineStyle === 'dashed' ? dashedCells : undefined)
   if (points.length > 1 && (element.type === 'arrow' || element.type === 'doubleArrow')) {
-    chars.set(key(points.at(-1)!), arrowFor(points.at(-2)!, points.at(-1)!))
+    chars.set(key(points.at(-1)!), arrowFor(points.at(-2)!, points.at(-1)!, compatibilityMode))
   }
   if (points.length > 1 && element.type === 'doubleArrow') {
-    chars.set(key(points[0]), arrowFor(points[1], points[0]))
+    chars.set(key(points[0]), arrowFor(points[1], points[0], compatibilityMode))
   }
 }
 
-export function rasterizeElements(elements: DiagramElement[]): Raster {
+export function rasterizeElements(elements: DiagramElement[], compatibilityMode = false): Raster {
   const masks = new Map<string, number>()
   const chars: Raster = new Map()
   const dashedCells = new Set<string>()
-  elements.slice().sort((a, b) => a.z - b.z).forEach((element) => drawElement(element, masks, chars, dashedCells))
+  elements.slice().sort((a, b) => a.z - b.z).forEach((element) => drawElement(element, masks, chars, dashedCells, compatibilityMode))
   masks.forEach((mask, cell) => {
     if (!chars.has(cell)) {
       const dashedGlyph = mask === (E | W) || mask === E || mask === W
@@ -139,7 +159,13 @@ export function rasterizeElements(elements: DiagramElement[]): Raster {
         : mask === (N | S) || mask === N || mask === S
           ? '┆'
           : null
-      chars.set(cell, dashedCells.has(cell) && dashedGlyph ? dashedGlyph : GLYPHS[mask] ?? '─')
+      const compatibleDashedGlyph = dashedGlyph === '┄' ? '.' : ':'
+      chars.set(
+        cell,
+        dashedCells.has(cell) && dashedGlyph
+          ? compatibilityMode ? compatibleDashedGlyph : dashedGlyph
+          : compatibilityMode ? ASCII_GLYPHS[mask] ?? '-' : GLYPHS[mask] ?? '─',
+      )
     }
   })
   return chars
@@ -153,8 +179,8 @@ export function rasterBounds(raster: Raster) {
   return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) }
 }
 
-export function toAscii(elements: DiagramElement[]) {
-  const raster = rasterizeElements(elements)
+export function toAscii(elements: DiagramElement[], compatibilityMode = false) {
+  const raster = rasterizeElements(elements, compatibilityMode)
   const bounds = rasterBounds(raster)
   if (!bounds) return ''
   const lines: string[] = []
@@ -167,22 +193,62 @@ export function toAscii(elements: DiagramElement[]) {
   return lines.join('\n')
 }
 
-export const toMarkdown = (elements: DiagramElement[]) => `\`\`\`\n${toAscii(elements)}\n\`\`\``
+export const toMarkdown = (elements: DiagramElement[], compatibilityMode = false) => `\`\`\`\n${toAscii(elements, compatibilityMode)}\n\`\`\``
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null
+
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value)
+
+const isPoint = (value: unknown): value is Point =>
+  isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y)
+
+function normalizeElement(value: unknown): DiagramElement | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || !isFiniteNumber(value.z) || typeof value.type !== 'string') return null
+  const base = { id: value.id, z: value.z }
+
+  if (value.type === 'box') {
+    if (!isFiniteNumber(value.x) || !isFiniteNumber(value.y) || !isFiniteNumber(value.width) || !isFiniteNumber(value.height) || typeof value.text !== 'string') return null
+    return { ...base, type: 'box', x: value.x, y: value.y, width: value.width, height: value.height, text: value.text }
+  }
+
+  if (value.type === 'text') {
+    if (!isFiniteNumber(value.x) || !isFiniteNumber(value.y) || typeof value.text !== 'string') return null
+    return { ...base, type: 'text', x: value.x, y: value.y, text: value.text }
+  }
+
+  if (value.type === 'freeform') {
+    if (!Array.isArray(value.points) || !value.points.every(isPoint)) return null
+    return { ...base, type: 'freeform', points: value.points, character: typeof value.character === 'string' && value.character ? value.character : 'x' }
+  }
+
+  if (value.type === 'line' || value.type === 'arrow' || value.type === 'doubleArrow') {
+    if (!isPoint(value.start) || !isPoint(value.end)) return null
+    const anchors = value.anchors === undefined ? [] : value.anchors
+    const routeAxes = value.routeAxes === undefined ? [] : value.routeAxes
+    if (!Array.isArray(anchors) || !anchors.every(isPoint)) return null
+    if (!Array.isArray(routeAxes) || !routeAxes.every((axis) => axis === 'horizontal' || axis === 'vertical')) return null
+    const lineStyle = value.lineStyle === 'dashed' ? 'dashed' : 'solid'
+    return { ...base, type: value.type, start: value.start, end: value.end, anchors, routeAxes, lineStyle }
+  }
+
+  return null
+}
+
+export function decodeStoredDocument(value: string): DocumentState | null {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!isRecord(parsed) || parsed.version !== 1 || !Array.isArray(parsed.elements)) return null
+    const elements = parsed.elements.map(normalizeElement)
+    if (elements.some((element) => element === null)) return null
+    return { version: 1, elements: elements as DiagramElement[] }
+  } catch {
+    return null
+  }
+}
 
 export function parseStoredDocument(value: string | null): DocumentState {
   if (!value) return { version: 1, elements: [] }
-  try {
-    const parsed = JSON.parse(value) as Partial<DocumentState>
-    if (parsed.version !== 1 || !Array.isArray(parsed.elements)) return { version: 1, elements: [] }
-    const elements = (parsed.elements as DiagramElement[]).map((element) => {
-      if (element.type === 'freeform') return { ...element, character: element.character || 'x' }
-      if (element.type === 'line' || element.type === 'arrow' || element.type === 'doubleArrow') {
-        return { ...element, anchors: element.anchors || [], lineStyle: element.lineStyle || 'solid' }
-      }
-      return element
-    })
-    return { version: 1, elements }
-  } catch {
-    return { version: 1, elements: [] }
-  }
+  return decodeStoredDocument(value) ?? { version: 1, elements: [] }
 }

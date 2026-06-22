@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DiagramElement } from './model'
-import { connectorPath, orthogonalPath, parseStoredDocument, rasterizeElements, toAscii, toMarkdown } from './rasterize'
+import { connectorPath, decodeStoredDocument, orthogonalPath, parseStoredDocument, rasterizeElements, toAscii, toMarkdown } from './rasterize'
 
 describe('orthogonalPath', () => {
   it('routes horizontally then vertically through one corner', () => {
@@ -13,6 +13,13 @@ describe('orthogonalPath', () => {
     expect(orthogonalPath({ x: 0, y: 0 }, { x: 2, y: 4 })).toEqual([
       { x: 0, y: 0 }, { x: 0, y: 1 }, { x: 0, y: 2 }, { x: 0, y: 3 }, { x: 0, y: 4 },
       { x: 1, y: 4 }, { x: 2, y: 4 },
+    ])
+  })
+
+  it('keeps a locked vertical departure when the cursor later moves wider', () => {
+    expect(orthogonalPath({ x: 0, y: 0 }, { x: 5, y: 3 }, 'vertical')).toEqual([
+      { x: 0, y: 0 }, { x: 0, y: 1 }, { x: 0, y: 2 }, { x: 0, y: 3 },
+      { x: 1, y: 3 }, { x: 2, y: 3 }, { x: 3, y: 3 }, { x: 4, y: 3 }, { x: 5, y: 3 },
     ])
   })
 
@@ -36,20 +43,20 @@ describe('rasterization', () => {
 
   it('merges line crossings into a junction', () => {
     const elements: DiagramElement[] = [
-      { id: 'h', z: 0, type: 'line', lineStyle: 'solid', anchors: [], start: { x: 0, y: 1 }, end: { x: 2, y: 1 } },
-      { id: 'v', z: 1, type: 'line', lineStyle: 'solid', anchors: [], start: { x: 1, y: 0 }, end: { x: 1, y: 2 } },
+      { id: 'h', z: 0, type: 'line', lineStyle: 'solid', anchors: [], routeAxes: [], start: { x: 0, y: 1 }, end: { x: 2, y: 1 } },
+      { id: 'v', z: 1, type: 'line', lineStyle: 'solid', anchors: [], routeAxes: [], start: { x: 1, y: 0 }, end: { x: 1, y: 2 } },
     ]
     expect(rasterizeElements(elements).get('1,1')).toBe('┼')
   })
 
   it('places directional arrowheads', () => {
-    const arrow: DiagramElement = { id: 'a', z: 0, type: 'doubleArrow', lineStyle: 'solid', anchors: [], start: { x: 0, y: 0 }, end: { x: 3, y: 0 } }
+    const arrow: DiagramElement = { id: 'a', z: 0, type: 'doubleArrow', lineStyle: 'solid', anchors: [], routeAxes: [], start: { x: 0, y: 0 }, end: { x: 3, y: 0 } }
     expect(toAscii([arrow])).toBe('◄──►')
   })
 
   it('renders dashed horizontal and vertical connectors', () => {
-    const horizontal: DiagramElement = { id: 'h', z: 0, type: 'line', lineStyle: 'dashed', anchors: [], start: { x: 0, y: 0 }, end: { x: 3, y: 0 } }
-    const vertical: DiagramElement = { id: 'v', z: 0, type: 'line', lineStyle: 'dashed', anchors: [], start: { x: 0, y: 0 }, end: { x: 0, y: 2 } }
+    const horizontal: DiagramElement = { id: 'h', z: 0, type: 'line', lineStyle: 'dashed', anchors: [], routeAxes: [], start: { x: 0, y: 0 }, end: { x: 3, y: 0 } }
+    const vertical: DiagramElement = { id: 'v', z: 0, type: 'line', lineStyle: 'dashed', anchors: [], routeAxes: [], start: { x: 0, y: 0 }, end: { x: 0, y: 2 } }
     expect(toAscii([horizontal])).toBe('┄┄┄┄')
     expect(toAscii([vertical])).toBe('┆\n┆\n┆')
   })
@@ -69,6 +76,14 @@ describe('markdown export', () => {
   it('crops whitespace and wraps the diagram in a code fence', () => {
     const text: DiagramElement = { id: 't', z: 0, type: 'text', x: 12, y: 8, text: 'hello' }
     expect(toMarkdown([text])).toBe('```\nhello\n```')
+  })
+
+  it('exports structural glyphs as ASCII in compatibility mode', () => {
+    const elements: DiagramElement[] = [
+      { id: 'box', z: 0, type: 'box', x: 0, y: 0, width: 5, height: 3, text: 'é' },
+      { id: 'arrow', z: 1, type: 'arrow', lineStyle: 'dashed', anchors: [], routeAxes: [], start: { x: 5, y: 1 }, end: { x: 8, y: 1 } },
+    ]
+    expect(toAscii(elements, true)).toBe('+---+\n| é |...>\n+---+')
   })
 })
 
@@ -90,5 +105,10 @@ describe('stored document validation', () => {
   it('falls back safely for invalid or old data', () => {
     expect(parseStoredDocument('not json')).toEqual({ version: 1, elements: [] })
     expect(parseStoredDocument('{"version":2,"elements":[]}')).toEqual({ version: 1, elements: [] })
+  })
+
+  it('rejects malformed diagram files instead of loading them', () => {
+    expect(decodeStoredDocument('{"version":1,"elements":[{"type":"box"}]}')).toBeNull()
+    expect(decodeStoredDocument('{"version":1,"elements":"invalid"}')).toBeNull()
   })
 })

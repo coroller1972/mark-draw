@@ -19,6 +19,7 @@ Il combine une interface de dessin proche d’Excalidraw avec la précision d’
 - Grille affichable ou masquable
 - Annulation et rétablissement
 - Autosauvegarde locale dans le navigateur
+- Sauvegarde et chargement de fichiers `.markdraw.json`
 - Export sous forme de bloc de code Markdown
 - Fonctionnement entièrement local, sans compte ni backend
 
@@ -40,9 +41,15 @@ Démonstration de l'application sur [https://mark-draw.vercel.app](https://mark-
 
 Les points d’ancrage peuvent ensuite être déplacés avec l’outil de sélection.
 
+### Sauvegarder un diagramme
+
+Les boutons de dossier et de téléchargement en haut à droite permettent de charger ou sauvegarder un diagramme sur le disque. Le fichier `.markdraw.json` utilise le même format versionné que l’autosauvegarde locale.
+
 ### Exporter vers Markdown
 
 Le bouton **Copier Markdown** recadre le diagramme, supprime les espaces inutiles en fin de ligne et copie un bloc prêt à coller :
+
+L’option **Maximiser la compatibilité** remplace uniquement les bordures, pointillés et flèches Unicode par des caractères ASCII plus largement pris en charge (`-`, `|`, `+`, `.`, `:`, `<`, `>`, `^`, `v`). Le texte du diagramme n’est pas modifié.
 
 ````md
 ```
@@ -109,5 +116,3 @@ npm test
 ```
 
 Le projet contient actuellement 14 tests unitaires.
-
-

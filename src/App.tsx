@@ -4,9 +4,12 @@ import {
   ClipboardTextIcon,
   CornersOutIcon,
   DotsNineIcon,
+  DownloadSimpleIcon,
+  FolderOpenIcon,
   HandIcon,
   MinusIcon,
   PlusIcon,
+  QuestionIcon,
   TrashIcon,
   WarningCircleIcon,
 } from '@phosphor-icons/react'
@@ -15,7 +18,7 @@ import { Inspector } from './components/Inspector'
 import { Toolbar } from './components/Toolbar'
 import type { DiagramElement, DocumentState, Tool } from './model'
 import { EMPTY_DOCUMENT } from './model'
-import { parseStoredDocument, toMarkdown } from './rasterize'
+import { decodeStoredDocument, parseStoredDocument, toMarkdown } from './rasterize'
 import markDrawLogo from './assets/mark-draw-logo.png'
 
 const STORAGE_KEY = 'mark-draw.document.v1'
@@ -47,7 +50,12 @@ export function App() {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved')
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'empty'>('idle')
   const [confirmClear, setConfirmClear] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [fileNotice, setFileNotice] = useState<'saved' | 'loaded' | 'error' | null>(null)
+  const [maximizeCompatibility, setMaximizeCompatibility] = useState(false)
   const copyTimer = useRef<number | null>(null)
+  const fileTimer = useRef<number | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const commit = useCallback((elements: DiagramElement[]) => {
     setDocument((current) => {
@@ -93,6 +101,10 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (helpOpen) {
+        if (event.key === 'Escape') setHelpOpen(false)
+        return
+      }
       if (confirmClear) {
         if (event.key === 'Escape') setConfirmClear(false)
         return
@@ -100,6 +112,11 @@ export function App() {
       const target = event.target
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return
       const modifier = event.metaKey || event.ctrlKey
+      if (event.key === '?') {
+        event.preventDefault()
+        setHelpOpen(true)
+        return
+      }
       if (modifier && event.key.toLowerCase() === 'z') {
         event.preventDefault()
         if (event.shiftKey) redo()
@@ -117,7 +134,7 @@ export function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [commit, confirmClear, document.elements, redo, selectedId, undo])
+  }, [commit, confirmClear, document.elements, helpOpen, redo, selectedId, undo])
 
   const selectedElement = useMemo(
     () => document.elements.find((element) => element.id === selectedId) ?? null,
@@ -131,7 +148,7 @@ export function App() {
       copyTimer.current = window.setTimeout(() => setCopyStatus('idle'), 1800)
       return
     }
-    const markdown = toMarkdown(document.elements)
+    const markdown = toMarkdown(document.elements, maximizeCompatibility)
     try {
       await navigator.clipboard.writeText(markdown)
     } catch {
@@ -147,6 +164,46 @@ export function App() {
     copyTimer.current = window.setTimeout(() => setCopyStatus('idle'), 1800)
   }
 
+  const showFileNotice = (notice: 'saved' | 'loaded' | 'error') => {
+    setFileNotice(notice)
+    if (fileTimer.current) window.clearTimeout(fileTimer.current)
+    fileTimer.current = window.setTimeout(() => setFileNotice(null), 2600)
+  }
+
+  const saveDiagramToDisk = () => {
+    const blob = new Blob([JSON.stringify(document, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = window.document.createElement('a')
+    const date = new Date().toISOString().slice(0, 10)
+    link.href = url
+    link.download = `mark-draw-${date}.markdraw.json`
+    window.document.body.append(link)
+    link.click()
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    showFileNotice('saved')
+  }
+
+  const loadDiagramFromDisk = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    try {
+      const loaded = decodeStoredDocument(await file.text())
+      if (!loaded) {
+        showFileNotice('error')
+        return
+      }
+      commit(loaded.elements)
+      setSelectedId(null)
+      setTool('select')
+      setFitRequest((value) => value + 1)
+      showFileNotice('loaded')
+    } catch {
+      showFileNotice('error')
+    }
+  }
+
   return (
     <>
       <main className="app-shell">
@@ -157,6 +214,21 @@ export function App() {
           </a>
           <Toolbar active={tool} onSelect={setTool} onUndo={undo} onRedo={redo} canUndo={past.length > 0} canRedo={future.length > 0} />
           <div className="header-actions">
+            <input
+              ref={fileInputRef}
+              className="visually-hidden"
+              type="file"
+              accept=".json,.markdraw.json,application/json"
+              onChange={loadDiagramFromDisk}
+              tabIndex={-1}
+              aria-hidden="true"
+            />
+            <button type="button" className="file-button" onClick={() => fileInputRef.current?.click()} aria-label="Charger un diagramme" title="Charger un diagramme">
+              <FolderOpenIcon size={20} />
+            </button>
+            <button type="button" className="file-button" onClick={saveDiagramToDisk} aria-label="Sauvegarder le diagramme sur le disque" title="Sauvegarder sur le disque">
+              <DownloadSimpleIcon size={20} />
+            </button>
             <button
               type="button"
               className="clear-button"
@@ -167,10 +239,16 @@ export function App() {
             >
               <TrashIcon size={20} />
             </button>
-            <button type="button" className={copyStatus === 'copied' ? 'copy-button copied' : copyStatus === 'empty' ? 'copy-button empty' : 'copy-button'} onClick={copyMarkdown}>
-              {copyStatus === 'copied' ? <CheckCircleIcon size={20} weight="bold" /> : <ClipboardTextIcon size={20} />}
-              {copyStatus === 'copied' ? 'Markdown copié' : copyStatus === 'empty' ? 'Diagramme vide' : 'Copier Markdown'}
-            </button>
+            <div className="export-stack">
+              <button type="button" className={copyStatus === 'copied' ? 'copy-button copied' : copyStatus === 'empty' ? 'copy-button empty' : 'copy-button'} onClick={copyMarkdown}>
+                {copyStatus === 'copied' ? <CheckCircleIcon size={20} weight="bold" /> : <ClipboardTextIcon size={20} />}
+                {copyStatus === 'copied' ? 'Markdown copié' : copyStatus === 'empty' ? 'Diagramme vide' : 'Copier Markdown'}
+              </button>
+              <label className="compatibility-option" title="Utiliser uniquement des caractères ASCII pour les bordures et les flèches">
+                <input type="checkbox" checked={maximizeCompatibility} onChange={(event) => setMaximizeCompatibility(event.target.checked)} />
+                <span>Maximiser la compatibilité</span>
+              </label>
+            </div>
           </div>
         </header>
 
@@ -213,6 +291,9 @@ export function App() {
             >
               <DotsNineIcon size={20} weight={showGrid ? 'fill' : 'regular'} />
             </button>
+            <button type="button" className="footer-help-control" onClick={() => setHelpOpen(true)} aria-label="Afficher l’aide" title="Aide et raccourcis (?)">
+              <QuestionIcon size={20} weight="bold" />
+            </button>
           </div>
           <div className={saveStatus === 'saved' ? 'save-status saved' : 'save-status'} role="status">
             <CheckCircleIcon size={21} weight={saveStatus === 'saved' ? 'fill' : 'regular'} />
@@ -229,6 +310,16 @@ export function App() {
           <div>
             <strong>{copyStatus === 'copied' ? 'Prêt à coller' : 'Rien à copier'}</strong>
             <span>{copyStatus === 'copied' ? 'Le bloc Markdown est dans le presse-papiers.' : 'Dessinez au moins un élément avant l’export.'}</span>
+          </div>
+        </div>
+      ) : null}
+
+      {fileNotice ? (
+        <div className={fileNotice === 'error' ? 'toast file-toast warning' : 'toast file-toast success'} role="status" aria-live="polite">
+          {fileNotice === 'error' ? <WarningCircleIcon size={21} weight="fill" /> : <CheckCircleIcon size={21} weight="fill" />}
+          <div>
+            <strong>{fileNotice === 'saved' ? 'Diagramme sauvegardé' : fileNotice === 'loaded' ? 'Diagramme chargé' : 'Fichier invalide'}</strong>
+            <span>{fileNotice === 'saved' ? 'Le fichier JSON a été téléchargé.' : fileNotice === 'loaded' ? 'Le canevas a été remplacé avec succès.' : 'Ce fichier n’est pas un document Mark Draw valide.'}</span>
           </div>
         </div>
       ) : null}
@@ -252,6 +343,71 @@ export function App() {
               >
                 Effacer le canevas
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {helpOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setHelpOpen(false)}>
+          <div className="help-dialog" role="dialog" aria-modal="true" aria-labelledby="help-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="help-heading">
+              <div>
+                <span className="help-symbol"><QuestionIcon size={22} weight="bold" /></span>
+                <div>
+                  <h2 id="help-title">Aide-mémoire Mark Draw</h2>
+                  <p>L’essentiel pour dessiner sans perdre le fil.</p>
+                </div>
+              </div>
+              <button type="button" className="dialog-close" onClick={() => setHelpOpen(false)} aria-label="Fermer l’aide" autoFocus>×</button>
+            </div>
+
+            <div className="reference-grid">
+              <section>
+                <h3>Outils</h3>
+                <dl>
+                  <div><dt>Sélection</dt><dd><kbd>V</kbd> <kbd>1</kbd></dd></div>
+                  <div><dt>Boîte / Texte</dt><dd><kbd>2</kbd> <kbd>3</kbd></dd></div>
+                  <div><dt>Ligne / Flèches</dt><dd><kbd>4</kbd> <kbd>5</kbd> <kbd>6</kbd></dd></div>
+                  <div><dt>Main libre</dt><dd><kbd>7</kbd></dd></div>
+                </dl>
+              </section>
+
+              <section>
+                <h3>Connecteurs</h3>
+                <ol>
+                  <li>Cliquez pour poser le départ.</li>
+                  <li><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + clic ajoute une ancre.</li>
+                  <li>Un clic simple termine le tracé.</li>
+                  <li><kbd>Échap</kbd> annule le tracé en cours.</li>
+                </ol>
+              </section>
+
+              <section>
+                <h3>Édition & navigation</h3>
+                <dl>
+                  <div><dt>Annuler</dt><dd><kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>Z</kbd></dd></div>
+                  <div><dt>Rétablir</dt><dd><kbd>Ctrl</kbd>/<kbd>⌘</kbd> <kbd>⇧ Z</kbd></dd></div>
+                  <div><dt>Supprimer</dt><dd><kbd>Suppr</kbd></dd></div>
+                  <div><dt>Déplacer la vue</dt><dd><kbd>Espace</kbd> + glisser</dd></div>
+                  <div><dt>Zoomer</dt><dd>Molette</dd></div>
+                </dl>
+              </section>
+
+              <section>
+                <h3>Fichiers & Markdown</h3>
+                <ul>
+                  <li>Le dossier charge un fichier <code>.markdraw.json</code>.</li>
+                  <li>La flèche télécharge le diagramme courant.</li>
+                  <li><strong>Copier Markdown</strong> prépare un bloc de code.</li>
+                  <li>Le mode compatibilité remplace les glyphes Unicode.</li>
+                </ul>
+              </section>
+            </div>
+
+            <div className="help-footer">
+              <span>Astuce : sélectionnez un élément pour modifier ses propriétés.</span>
+              <button type="button" className="primary-button" onClick={() => setHelpOpen(false)}>Compris</button>
             </div>
           </div>
         </div>

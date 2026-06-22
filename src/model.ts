@@ -1,6 +1,7 @@
 export type Tool = 'select' | 'hand' | 'box' | 'text' | 'line' | 'arrow' | 'doubleArrow' | 'freeform'
 
 export type Point = { x: number; y: number }
+export type RouteAxis = 'horizontal' | 'vertical'
 
 type BaseElement = {
   id: string
@@ -28,6 +29,7 @@ export type ConnectorElement = BaseElement & {
   start: Point
   end: Point
   anchors: Point[]
+  routeAxes: RouteAxis[]
   lineStyle: 'solid' | 'dashed'
 }
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DiagramElement, Point, Tool } from '../model'
+import type { DiagramElement, Point, RouteAxis, Tool } from '../model'
 import { createId, elementBounds, moveElement } from '../model'
 import { rasterizeElements } from '../rasterize'
 
@@ -35,9 +35,14 @@ type ConnectorDraft = {
   tool: 'line' | 'arrow' | 'doubleArrow'
   points: Point[]
   current: Point
+  axes: RouteAxis[]
+  currentAxis?: RouteAxis
 }
 
 const samePoint = (a: Point, b: Point) => a.x === b.x && a.y === b.y
+
+const dominantAxis = (start: Point, end: Point): RouteAxis =>
+  Math.abs(end.x - start.x) >= Math.abs(end.y - start.y) ? 'horizontal' : 'vertical'
 
 const cellFromEvent = (event: React.PointerEvent<HTMLCanvasElement>, canvas: HTMLCanvasElement, view: ViewState): Point => {
   const rect = canvas.getBoundingClientRect()
@@ -61,7 +66,7 @@ function draftElement(tool: Tool, gesture: Extract<Gesture, { kind: 'draw' }>, z
     return { id: 'draft', z, type: 'box', x, y, width: Math.max(3, Math.abs(current.x - start.x) + 1), height: Math.max(3, Math.abs(current.y - start.y) + 1), text: 'Boîte' }
   }
   if (tool === 'line' || tool === 'arrow' || tool === 'doubleArrow') {
-    return { id: 'draft', z, type: tool, start, end: current, anchors: [], lineStyle: 'solid' }
+    return { id: 'draft', z, type: tool, start, end: current, anchors: [], routeAxes: [], lineStyle: 'solid' }
   }
   if (tool === 'freeform') return { id: 'draft', z, type: 'freeform', points: gesture.points, character: 'x' }
   return null
@@ -141,6 +146,7 @@ export function DiagramCanvas({ elements, tool, selectedId, view, showGrid, fitR
           start: connectorDraft.points[0],
           anchors: connectorDraft.points.slice(1),
           end: connectorDraft.current,
+          routeAxes: connectorDraft.currentAxis ? [...connectorDraft.axes, connectorDraft.currentAxis] : connectorDraft.axes,
           lineStyle: 'solid' as const,
         }]
       }
@@ -158,6 +164,7 @@ export function DiagramCanvas({ elements, tool, selectedId, view, showGrid, fitR
         start: connectorDraft.points[0],
         anchors: connectorDraft.points.slice(1),
         end: gesture.point,
+        routeAxes: connectorDraft.currentAxis ? [...connectorDraft.axes, connectorDraft.currentAxis] : connectorDraft.axes,
         lineStyle: 'solid' as const,
       }]
     }
@@ -306,7 +313,13 @@ export function DiagramCanvas({ elements, tool, selectedId, view, showGrid, fitR
     const canvas = canvasRef.current
     if (!canvas) return
     if (!gesture) {
-      if (connectorDraft) setConnectorDraft({ ...connectorDraft, current: cellFromEvent(event, canvas, view) })
+      if (connectorDraft) {
+        const current = cellFromEvent(event, canvas, view)
+        const origin = connectorDraft.points.at(-1)!
+        const distance = Math.max(Math.abs(current.x - origin.x), Math.abs(current.y - origin.y))
+        const currentAxis = connectorDraft.currentAxis ?? (distance >= 2 ? dominantAxis(origin, current) : undefined)
+        setConnectorDraft({ ...connectorDraft, current, currentAxis })
+      }
       return
     }
     if (gesture.kind === 'pan') {
@@ -339,13 +352,15 @@ export function DiagramCanvas({ elements, tool, selectedId, view, showGrid, fitR
     if (!gesture) return
     const keepDrawing = event.ctrlKey || event.metaKey
     if (gesture.kind === 'connectorStart' && (tool === 'line' || tool === 'arrow' || tool === 'doubleArrow')) {
-      setConnectorDraft({ tool, points: [gesture.point], current: gesture.point })
+      setConnectorDraft({ tool, points: [gesture.point], current: gesture.point, axes: [] })
     } else if (gesture.kind === 'connectorNext' && connectorDraft) {
       if (keepDrawing) {
         const points = samePoint(connectorDraft.points.at(-1)!, gesture.point)
           ? connectorDraft.points
           : [...connectorDraft.points, gesture.point]
-        setConnectorDraft({ ...connectorDraft, points, current: gesture.point })
+        const segmentAxis = connectorDraft.currentAxis ?? dominantAxis(connectorDraft.points.at(-1)!, gesture.point)
+        const axes = points === connectorDraft.points ? connectorDraft.axes : [...connectorDraft.axes, segmentAxis]
+        setConnectorDraft({ ...connectorDraft, points, axes, current: gesture.point, currentAxis: undefined })
       } else {
         const created: DiagramElement = {
           id: createId(),
@@ -354,6 +369,7 @@ export function DiagramCanvas({ elements, tool, selectedId, view, showGrid, fitR
           start: connectorDraft.points[0],
           anchors: connectorDraft.points.slice(1),
           end: gesture.point,
+          routeAxes: [...connectorDraft.axes, connectorDraft.currentAxis ?? dominantAxis(connectorDraft.points.at(-1)!, gesture.point)],
           lineStyle: 'solid',
         }
         onCommit([...elements, created])
